@@ -35,11 +35,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 
-class SubtitleActivity : ComponentActivity() {
+private const val TAG = "SubtitleActivity"
 
-    companion object {
-        private const val TAG = "SubtitleActivity"
-    }
+class SubtitleActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -399,22 +397,22 @@ private suspend fun downloadSubtitles(
     copyToClipboard: Boolean
 ): Result<String> {
     return try {
-        Log.d(SubtitleActivity.TAG, "Starting subtitle download for ${videoInfo.videoId}, track: ${track.languageCode}")
+        Log.d(TAG, "Starting subtitle download for ${videoInfo.videoId}, track: ${track.languageCode}")
 
         // Fetch subtitles
         val subtitlesResult = youtubeApi.getSubtitles(videoInfo.videoId, track)
 
         if (subtitlesResult.isFailure) {
-            Log.e(SubtitleActivity.TAG, "Failed to fetch subtitles", subtitlesResult.exceptionOrNull())
+            Log.e(TAG, "Failed to fetch subtitles", subtitlesResult.exceptionOrNull())
             return Result.failure(subtitlesResult.exceptionOrNull()!!)
         }
 
         val subtitleContent = subtitlesResult.getOrNull()!!
-        Log.d(SubtitleActivity.TAG, "Fetched subtitle content: ${subtitleContent.length} characters")
-        Log.d(SubtitleActivity.TAG, "Content preview: ${subtitleContent.take(200)}")
+        Log.d(TAG, "Fetched subtitle content: ${subtitleContent.length} characters")
+        Log.d(TAG, "Content preview: ${subtitleContent.take(200)}")
 
         if (subtitleContent.isBlank()) {
-            Log.e(SubtitleActivity.TAG, "Subtitle content is empty!")
+            Log.e(TAG, "Subtitle content is empty!")
             return Result.failure(Exception("Subtitle content is empty"))
         }
 
@@ -424,7 +422,7 @@ private suspend fun downloadSubtitles(
             .replace(Regex("\\s+"), "_")
             .take(50)
         val filename = "${sanitizedTitle}_${track.languageCode}.srt"
-        Log.d(SubtitleActivity.TAG, "Saving to filename: $filename")
+        Log.d(TAG, "Saving to filename: $filename")
 
         // Save to Downloads folder using MediaStore
         val values = ContentValues().apply {
@@ -438,25 +436,25 @@ private suspend fun downloadSubtitles(
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
         if (uri == null) {
-            Log.e(SubtitleActivity.TAG, "Failed to create MediaStore URI")
+            Log.e(TAG, "Failed to create MediaStore URI")
             return Result.failure(IOException("Failed to create file"))
         }
-        Log.d(SubtitleActivity.TAG, "Created file URI: $uri")
+        Log.d(TAG, "Created file URI: $uri")
 
         resolver.openOutputStream(uri)?.use { outputStream ->
             val bytes = subtitleContent.toByteArray()
-            Log.d(SubtitleActivity.TAG, "Writing ${bytes.size} bytes to file")
+            Log.d(TAG, "Writing ${bytes.size} bytes to file")
             outputStream.write(bytes)
             outputStream.flush()
-            Log.d(SubtitleActivity.TAG, "File written successfully")
+            Log.d(TAG, "File written successfully")
         } ?: run {
-            Log.e(SubtitleActivity.TAG, "Failed to open output stream")
+            Log.e(TAG, "Failed to open output stream")
             return Result.failure(IOException("Failed to open output stream"))
         }
 
         // Copy to clipboard if requested
         if (copyToClipboard) {
-            Log.d(SubtitleActivity.TAG, "Copying to clipboard")
+            Log.d(TAG, "Copying to clipboard")
             ClipboardHelper.copyToClipboard(context, subtitleContent, "Subtitles")
         }
 
@@ -466,10 +464,10 @@ private suspend fun downloadSubtitles(
             "Subtitles saved to Downloads/SubSnag ✓"
         }
 
-        Log.i(SubtitleActivity.TAG, "Download complete: $message")
+        Log.i(TAG, "Download complete: $message")
         Result.success(message)
     } catch (e: Exception) {
-        Log.e(SubtitleActivity.TAG, "Download failed", e)
+        Log.e(TAG, "Download failed", e)
         Result.failure(e)
     }
 }
