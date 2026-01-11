@@ -158,18 +158,26 @@ class YouTubeApi {
 
             Log.d(TAG, "Fetching subtitles from: $subtitleUrl")
 
-            val response = client.get(subtitleUrl) {
-                // Add headers to mimic a browser request
-                header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            val httpResponse = client.get(subtitleUrl) {
+                // Add headers to mimic a browser request FROM YouTube's own page
+                header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 header("Accept-Language", "en-US,en;q=0.9")
-            }.bodyAsText()
+                header("Referer", "https://www.youtube.com/watch?v=$videoId")
+                header("Origin", "https://www.youtube.com")
+                header("DNT", "1")
+            }
 
+            Log.d(TAG, "HTTP Status: ${httpResponse.status}")
+            Log.d(TAG, "HTTP Status Code: ${httpResponse.status.value}")
+
+            val response = httpResponse.bodyAsText()
             Log.d(TAG, "Subtitle response length: ${response.length} bytes")
             Log.d(TAG, "Response preview: ${response.take(200)}")
 
             if (response.isBlank()) {
-                Log.e(TAG, "Empty subtitle response")
-                return Result.failure(Exception("Empty subtitle response from YouTube"))
+                Log.e(TAG, "Empty subtitle response - HTTP ${httpResponse.status.value}")
+                return Result.failure(Exception("Empty subtitle response from YouTube (HTTP ${httpResponse.status.value})"))
             }
 
             // Detect format and convert to SRT
