@@ -1,5 +1,6 @@
 package com.subsnag.api
 
+import android.util.Log
 import com.subsnag.model.SubtitleTrack
 import com.subsnag.model.VideoInfo
 import io.ktor.client.*
@@ -23,13 +24,20 @@ class YouTubeApi {
         isLenient = true
     }
 
+    companion object {
+        private const val TAG = "YouTubeApi"
+    }
+
     /**
      * Fetches video information including title, thumbnail, and available caption tracks.
      */
     suspend fun getVideoInfo(videoId: String): Result<VideoInfo> {
         return try {
+            Log.d(TAG, "Fetching video info for: $videoId")
+
             // Step 1: Get basic info from oEmbed API
             val oEmbedUrl = "https://www.youtube.com/oembed?url=https://youtube.com/watch?v=$videoId&format=json"
+            Log.d(TAG, "Fetching oEmbed: $oEmbedUrl")
             val oEmbedResponse = client.get(oEmbedUrl).bodyAsText()
             val oEmbedJson = json.parseToJsonElement(oEmbedResponse).jsonObject
 
@@ -37,13 +45,18 @@ class YouTubeApi {
             val thumbnailUrl = oEmbedJson["thumbnail_url"]?.jsonPrimitive?.content
                 ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
 
+            Log.d(TAG, "Video title: $title")
+
             // Step 2: Fetch the watch page to get caption tracks
             val watchPageUrl = "https://www.youtube.com/watch?v=$videoId"
+            Log.d(TAG, "Fetching watch page: $watchPageUrl")
             val watchPageHtml = client.get(watchPageUrl).bodyAsText()
 
             val captionTracks = extractCaptionTracks(watchPageHtml)
+            Log.d(TAG, "Found ${captionTracks.size} caption tracks")
 
             if (captionTracks.isEmpty()) {
+                Log.w(TAG, "No subtitles available")
                 return Result.failure(Exception("No subtitles available for this video"))
             }
 
@@ -56,6 +69,7 @@ class YouTubeApi {
                 )
             )
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch video info", e)
             Result.failure(Exception("Failed to fetch video info: ${e.message}", e))
         }
     }
@@ -146,17 +160,41 @@ class YouTubeApi {
                 "https://www.youtube.com/api/timedtext?v=$videoId&lang=${track.languageCode}&fmt=srv3"
             }
 
+            Log.d(TAG, "Fetching subtitles from: $subtitleUrl")
             val response = client.get(subtitleUrl).bodyAsText()
+            Log.d(TAG, "Subtitle response length: ${response.length} bytes")
+            Log.d(TAG, "Response preview: ${response.take(200)}")
 
-            // Convert to SRT format
-            val srtContent = if (track.baseUrl != null) {
-                convertToSRT(response)
-            } else {
-                convertSRV3ToSRT(response)
+            if (response.isBlank()) {
+                Log.e(TAG, "Empty subtitle response")
+                return Result.failure(Exception("Empty subtitle response from YouTube"))
+            }
+
+            // Detect format and convert to SRT
+            val srtContent = when {
+                response.trim().startsWith("<?xml") || response.trim().startsWith("<transcript") -> {
+                    Log.d(TAG, "Detected XML format")
+                    convertXMLToSRT(response)
+                }
+                response.trim().startsWith("{") -> {
+                    Log.d(TAG, "Detected JSON format")
+                    convertToSRT(response)
+                }
+                else -> {
+                    Log.w(TAG, "Unknown format, trying XML parser")
+                    convertXMLToSRT(response)
+                }
+            }
+
+            Log.d(TAG, "Converted SRT length: ${srtContent.length} bytes")
+            if (srtContent.isBlank()) {
+                Log.e(TAG, "Conversion resulted in empty SRT")
+                return Result.failure(Exception("Failed to convert subtitles to SRT format"))
             }
 
             Result.success(srtContent)
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch subtitles", e)
             Result.failure(Exception("Failed to fetch subtitles: ${e.message}", e))
         }
     }
@@ -215,13 +253,32 @@ class YouTubeApi {
         var counter = 1
 
         try {
+            Log.d(TAG, "Parsing XML content...")
             val doc = Jsoup.parse(xmlContent, "", org.jsoup.parser.Parser.xmlParser())
             val textElements = doc.select("text")
+            Log.d(TAG, "Found ${textElements.size} text elements")
+
+            if (textElements.isEmpty()) {
+                Log.w(TAG, "No <text> elements found in XML")
+            }
 
             for (element in textElements) {
-                val start = element.attr("start").toDoubleOrNull()?.times(1000)?.toLong() ?: continue
-                val duration = element.attr("dur").toDoubleOrNull()?.times(1000)?.toLong() ?: 3000
-                val text = decodeHtml(element.text()).trim()
+                val startStr = element.attr("start")
+                val durStr = element.attr("dur")
+                val rawText = element.text()
+
+                Log.v(TAG, "Element $counter: start=$startStr, dur=$durStr, text=${rawText.take(50)}")
+
+                val start = startStr.toDoubleOrNull()?.times(1000)?.toLong()
+                if (start == null) {
+                    Log.w(TAG, "Invalid start time: $startStr")
+                    continue
+                }
+
+                val duration = durStr.toDoubleOrNull()?.times(1000)?.toLong() ?: 3000
+
+                // Use Jsoup's built-in HTML entity decoding
+                val text = Jsoup.parse(rawText).text().trim()
 
                 if (text.isNotEmpty()) {
                     val end = start + duration
@@ -231,7 +288,10 @@ class YouTubeApi {
                     counter++
                 }
             }
+
+            Log.d(TAG, "Converted ${counter - 1} subtitle entries")
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse XML", e)
             throw Exception("Failed to parse subtitle XML: ${e.message}")
         }
 

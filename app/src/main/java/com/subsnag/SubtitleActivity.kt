@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,6 +36,10 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 
 class SubtitleActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "SubtitleActivity"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -394,14 +399,24 @@ private suspend fun downloadSubtitles(
     copyToClipboard: Boolean
 ): Result<String> {
     return try {
+        Log.d(SubtitleActivity.TAG, "Starting subtitle download for ${videoInfo.videoId}, track: ${track.languageCode}")
+
         // Fetch subtitles
         val subtitlesResult = youtubeApi.getSubtitles(videoInfo.videoId, track)
 
         if (subtitlesResult.isFailure) {
+            Log.e(SubtitleActivity.TAG, "Failed to fetch subtitles", subtitlesResult.exceptionOrNull())
             return Result.failure(subtitlesResult.exceptionOrNull()!!)
         }
 
         val subtitleContent = subtitlesResult.getOrNull()!!
+        Log.d(SubtitleActivity.TAG, "Fetched subtitle content: ${subtitleContent.length} characters")
+        Log.d(SubtitleActivity.TAG, "Content preview: ${subtitleContent.take(200)}")
+
+        if (subtitleContent.isBlank()) {
+            Log.e(SubtitleActivity.TAG, "Subtitle content is empty!")
+            return Result.failure(Exception("Subtitle content is empty"))
+        }
 
         // Create filename
         val sanitizedTitle = videoInfo.title
@@ -409,6 +424,7 @@ private suspend fun downloadSubtitles(
             .replace(Regex("\\s+"), "_")
             .take(50)
         val filename = "${sanitizedTitle}_${track.languageCode}.srt"
+        Log.d(SubtitleActivity.TAG, "Saving to filename: $filename")
 
         // Save to Downloads folder using MediaStore
         val values = ContentValues().apply {
@@ -421,14 +437,26 @@ private suspend fun downloadSubtitles(
 
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return Result.failure(IOException("Failed to create file"))
+        if (uri == null) {
+            Log.e(SubtitleActivity.TAG, "Failed to create MediaStore URI")
+            return Result.failure(IOException("Failed to create file"))
+        }
+        Log.d(SubtitleActivity.TAG, "Created file URI: $uri")
 
         resolver.openOutputStream(uri)?.use { outputStream ->
-            outputStream.write(subtitleContent.toByteArray())
-        } ?: return Result.failure(IOException("Failed to open output stream"))
+            val bytes = subtitleContent.toByteArray()
+            Log.d(SubtitleActivity.TAG, "Writing ${bytes.size} bytes to file")
+            outputStream.write(bytes)
+            outputStream.flush()
+            Log.d(SubtitleActivity.TAG, "File written successfully")
+        } ?: run {
+            Log.e(SubtitleActivity.TAG, "Failed to open output stream")
+            return Result.failure(IOException("Failed to open output stream"))
+        }
 
         // Copy to clipboard if requested
         if (copyToClipboard) {
+            Log.d(SubtitleActivity.TAG, "Copying to clipboard")
             ClipboardHelper.copyToClipboard(context, subtitleContent, "Subtitles")
         }
 
@@ -438,8 +466,10 @@ private suspend fun downloadSubtitles(
             "Subtitles saved to Downloads/SubSnag ✓"
         }
 
+        Log.i(SubtitleActivity.TAG, "Download complete: $message")
         Result.success(message)
     } catch (e: Exception) {
+        Log.e(SubtitleActivity.TAG, "Download failed", e)
         Result.failure(e)
     }
 }
