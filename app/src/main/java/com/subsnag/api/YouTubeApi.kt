@@ -30,6 +30,7 @@ class YouTubeApi {
 
     /**
      * Fetches video information including title, thumbnail, and available caption tracks.
+     * Uses InnerTube API with ANDROID client to get fresh auth parameters.
      */
     suspend fun getVideoInfo(videoId: String): Result<VideoInfo> {
         return try {
@@ -47,13 +48,21 @@ class YouTubeApi {
 
             Log.d(TAG, "Video title: $title")
 
-            // Step 2: Fetch the watch page to get caption tracks
+            // Step 2: Fetch the watch page to extract INNERTUBE_API_KEY
             val watchPageUrl = "https://www.youtube.com/watch?v=$videoId"
             Log.d(TAG, "Fetching watch page: $watchPageUrl")
             val watchPageHtml = client.get(watchPageUrl).bodyAsText()
 
-            val captionTracks = extractCaptionTracks(watchPageHtml)
-            Log.d(TAG, "Found ${captionTracks.size} caption tracks")
+            val apiKey = extractInnerTubeApiKey(watchPageHtml)
+            if (apiKey == null) {
+                Log.e(TAG, "Failed to extract INNERTUBE_API_KEY from watch page")
+                return Result.failure(Exception("Failed to extract YouTube API key"))
+            }
+            Log.d(TAG, "Extracted INNERTUBE_API_KEY: ${apiKey.take(20)}...")
+
+            // Step 3: Call InnerTube player API with ANDROID client to get fresh caption tracks
+            val captionTracks = getCaptionTracksFromInnerTube(videoId, apiKey)
+            Log.d(TAG, "Found ${captionTracks.size} caption tracks from InnerTube API")
 
             if (captionTracks.isEmpty()) {
                 Log.w(TAG, "No subtitles available")
@@ -75,7 +84,105 @@ class YouTubeApi {
     }
 
     /**
+     * Extracts the INNERTUBE_API_KEY from YouTube watch page HTML.
+     */
+    private fun extractInnerTubeApiKey(html: String): String? {
+        return try {
+            val pattern = Regex(""""INNERTUBE_API_KEY":"([^"]+)"""")
+            val matchResult = pattern.find(html)
+            matchResult?.groupValues?.get(1)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract INNERTUBE_API_KEY", e)
+            null
+        }
+    }
+
+    /**
+     * Calls YouTube's InnerTube player API with ANDROID client to get fresh caption tracks.
+     * This bypasses the PoToken anti-bot protection by using the official Android client.
+     */
+    private suspend fun getCaptionTracksFromInnerTube(videoId: String, apiKey: String): List<SubtitleTrack> {
+        val tracks = mutableListOf<SubtitleTrack>()
+
+        return try {
+            val innerTubeUrl = "https://www.youtube.com/youtubei/v1/player?key=$apiKey"
+            Log.d(TAG, "Calling InnerTube API: $innerTubeUrl")
+
+            // Create request body with ANDROID client context
+            val requestBody = buildJsonObject {
+                put("videoId", videoId)
+                putJsonObject("context") {
+                    putJsonObject("client") {
+                        put("clientName", "ANDROID")
+                        put("clientVersion", "20.10.38")
+                        put("androidSdkVersion", "30")
+                        put("hl", "en")
+                        put("gl", "US")
+                    }
+                }
+            }
+
+            Log.d(TAG, "Request body: ${requestBody.toString().take(200)}...")
+
+            // POST to InnerTube API
+            val response = client.post(innerTubeUrl) {
+                header("Content-Type", "application/json")
+                header("User-Agent", "com.google.android.youtube/20.10.38 (Linux; U; Android 11)")
+                header("X-YouTube-Client-Name", "3") // 3 = ANDROID
+                header("X-YouTube-Client-Version", "20.10.38")
+                setBody(requestBody.toString())
+            }
+
+            val responseText = response.bodyAsText()
+            Log.d(TAG, "InnerTube response length: ${responseText.length} bytes")
+
+            val playerResponse = json.parseToJsonElement(responseText).jsonObject
+
+            // Extract caption tracks from response
+            val captions = playerResponse["captions"]?.jsonObject
+            val playerCaptionRenderer = captions?.get("playerCaptionsTracklistRenderer")?.jsonObject
+            val captionTracks = playerCaptionRenderer?.get("captionTracks")?.jsonArray
+
+            if (captionTracks == null) {
+                Log.w(TAG, "No captionTracks found in InnerTube response")
+                return emptyList()
+            }
+
+            Log.d(TAG, "Found ${captionTracks.size} caption tracks in InnerTube response")
+
+            captionTracks.forEach { trackElement ->
+                val trackObj = trackElement.jsonObject
+                val baseUrl = trackObj["baseUrl"]?.jsonPrimitive?.content ?: return@forEach
+                val languageCode = trackObj["languageCode"]?.jsonPrimitive?.content ?: "en"
+
+                val name = trackObj["name"]?.jsonObject?.get("simpleText")?.jsonPrimitive?.content
+                    ?: trackObj["name"]?.jsonObject?.get("runs")?.jsonArray?.get(0)?.jsonObject?.get("text")?.jsonPrimitive?.content
+                    ?: languageCode
+
+                val isAutoGenerated = trackObj["kind"]?.jsonPrimitive?.content == "asr"
+
+                Log.d(TAG, "Track: lang=$languageCode, name=$name, auto=$isAutoGenerated, baseUrl=${baseUrl.take(80)}...")
+
+                tracks.add(
+                    SubtitleTrack(
+                        languageCode = languageCode,
+                        languageName = name,
+                        isAutoGenerated = isAutoGenerated,
+                        baseUrl = baseUrl  // Fresh auth params from InnerTube!
+                    )
+                )
+            }
+
+            tracks
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get caption tracks from InnerTube API", e)
+            emptyList()
+        }
+    }
+
+    /**
      * Extracts caption track information from the YouTube watch page HTML.
+     * DEPRECATED: This extracts expired auth params. Use getCaptionTracksFromInnerTube() instead.
      */
     private fun extractCaptionTracks(html: String): List<SubtitleTrack> {
         val tracks = mutableListOf<SubtitleTrack>()
@@ -148,14 +255,14 @@ class YouTubeApi {
 
     /**
      * Fetches subtitle content in SRT format.
-     * Uses the complete baseUrl from YouTube which contains all required auth parameters.
+     * Uses the fresh baseUrl from InnerTube API which contains valid auth parameters.
      */
     suspend fun getSubtitles(videoId: String, track: SubtitleTrack): Result<String> {
         return try {
-            // CRITICAL: Use the baseUrl from track which contains all auth params from ytInitialPlayerResponse
-            // This includes signature, expire timestamp, and other anti-bot protection parameters
+            // CRITICAL: Use the baseUrl from track which contains FRESH auth params from InnerTube API
+            // This includes valid signature, expire timestamp, and bypasses PoToken anti-bot protection
             val subtitleUrl = if (track.baseUrl != null && track.baseUrl.isNotBlank()) {
-                Log.d(TAG, "Using baseUrl from track (contains auth params)")
+                Log.d(TAG, "Using fresh baseUrl from InnerTube API (contains valid auth params)")
                 track.baseUrl
             } else {
                 // Fallback: construct simple URL (likely won't work due to PoToken protection)
