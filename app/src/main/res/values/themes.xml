@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Base application theme -->
-    <style name="Theme.SubSnag" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.SubSnag" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 
     <!-- Dialog theme for SubtitleActivity -->
-    <style name="Theme.SubSnag.Dialog" parent="Theme.Material3.DayNight.Dialog">
+    <style name="Theme.SubSnag.Dialog" parent="Theme.MaterialComponents.DayNight.Dialog">
         <item name="android:windowIsFloating">true</item>
         <item name="android:windowCloseOnTouchOutside">true</item>
         <item name="android:backgroundDimEnabled">true</item>
