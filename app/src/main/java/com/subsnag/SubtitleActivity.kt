@@ -33,15 +33,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import android.util.Log
 
 class SubtitleActivity : ComponentActivity() {
 
+    companion object {
+        const val TAG = "SubtitleActivity"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d(TAG, "onCreate: SubtitleActivity started")
 
         val videoId = intent.getStringExtra("videoId")
+        Log.d(TAG, "onCreate: videoId = $videoId")
 
         if (videoId == null) {
+            Log.e(TAG, "onCreate: Invalid video ID received")
             Toast.makeText(this, "Invalid video ID", Toast.LENGTH_SHORT).show()
             finish()
             return
@@ -85,6 +93,7 @@ fun SubtitleDownloadDialog(
 
     // Fetch video info on launch
     LaunchedEffect(videoId) {
+        Log.d(TAG, "LaunchedEffect: Starting to fetch video info for videoId: $videoId")
         isLoading = true
         error = null
 
@@ -93,12 +102,15 @@ fun SubtitleDownloadDialog(
         }
 
         result.onSuccess { info ->
+            Log.d(TAG, "LaunchedEffect: Successfully fetched video info - title: ${info.title}, tracks: ${info.availableTracks.size}")
             videoInfo = info
             // Auto-select English if available, otherwise first track
             selectedTrack = info.availableTracks.find { it.languageCode == "en" }
                 ?: info.availableTracks.firstOrNull()
+            Log.d(TAG, "LaunchedEffect: Auto-selected track: ${selectedTrack?.displayName} (${selectedTrack?.languageCode})")
             isLoading = false
         }.onFailure { e ->
+            Log.e(TAG, "LaunchedEffect: Failed to load video info", e)
             error = e.message ?: "Failed to load video info"
             isLoading = false
         }
@@ -126,6 +138,7 @@ fun SubtitleDownloadDialog(
                         ErrorContent(
                             error = error!!,
                             onRetry = {
+                                Log.d(TAG, "ErrorContent: Retry button clicked")
                                 scope.launch {
                                     isLoading = true
                                     error = null
@@ -133,11 +146,13 @@ fun SubtitleDownloadDialog(
                                         youtubeApi.getVideoInfo(videoId)
                                     }
                                     result.onSuccess { info ->
+                                        Log.d(TAG, "ErrorContent: Retry successful - title: ${info.title}")
                                         videoInfo = info
                                         selectedTrack = info.availableTracks.find { it.languageCode == "en" }
                                             ?: info.availableTracks.firstOrNull()
                                         isLoading = false
                                     }.onFailure { e ->
+                                        Log.e(TAG, "ErrorContent: Retry failed", e)
                                         error = e.message ?: "Failed to load video info"
                                         isLoading = false
                                     }
@@ -156,10 +171,12 @@ fun SubtitleDownloadDialog(
                             onCopyToClipboardChanged = { copyToClipboard = it },
                             onDownload = {
                                 if (selectedTrack == null) {
+                                    Log.w(TAG, "VideoInfoContent: Download attempted with no track selected")
                                     onError("Please select a language")
                                     return@VideoInfoContent
                                 }
 
+                                Log.d(TAG, "VideoInfoContent: Starting download - track: ${selectedTrack!!.displayName}, copyToClipboard: $copyToClipboard")
                                 scope.launch {
                                     isDownloading = true
                                     val result = withContext(Dispatchers.IO) {
@@ -175,8 +192,10 @@ fun SubtitleDownloadDialog(
                                     isDownloading = false
 
                                     result.onSuccess { message ->
+                                        Log.d(TAG, "VideoInfoContent: Download successful - $message")
                                         onDownloadSuccess(message)
                                     }.onFailure { e ->
+                                        Log.e(TAG, "VideoInfoContent: Download failed", e)
                                         onError(e.message ?: "Download failed")
                                     }
                                 }
@@ -394,14 +413,18 @@ private suspend fun downloadSubtitles(
     copyToClipboard: Boolean
 ): Result<String> {
     return try {
+        Log.d(TAG, "downloadSubtitles: Starting download for videoId: ${videoInfo.videoId}, track: ${track.languageCode}")
+        
         // Fetch subtitles
         val subtitlesResult = youtubeApi.getSubtitles(videoInfo.videoId, track)
 
         if (subtitlesResult.isFailure) {
+            Log.e(TAG, "downloadSubtitles: Failed to fetch subtitles", subtitlesResult.exceptionOrNull())
             return Result.failure(subtitlesResult.exceptionOrNull()!!)
         }
 
         val subtitleContent = subtitlesResult.getOrNull()!!
+        Log.d(TAG, "downloadSubtitles: Successfully fetched subtitles, size: ${subtitleContent.length} bytes")
 
         // Create filename
         val sanitizedTitle = videoInfo.title
@@ -409,6 +432,7 @@ private suspend fun downloadSubtitles(
             .replace(Regex("\\s+"), "_")
             .take(50)
         val filename = "${sanitizedTitle}_${track.languageCode}.srt"
+        Log.d(TAG, "downloadSubtitles: Generated filename: $filename")
 
         // Save to Downloads folder using MediaStore
         val values = ContentValues().apply {
@@ -416,20 +440,33 @@ private suspend fun downloadSubtitles(
             put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/SubSnag")
+                Log.d(TAG, "downloadSubtitles: Saving to Download/SubSnag folder")
+            } else {
+                Log.d(TAG, "downloadSubtitles: Saving to Downloads folder (Android < Q)")
             }
         }
 
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return Result.failure(IOException("Failed to create file"))
+        if (uri == null) {
+            Log.e(TAG, "downloadSubtitles: Failed to create file via MediaStore")
+            return Result.failure(IOException("Failed to create file"))
+        }
+        Log.d(TAG, "downloadSubtitles: File URI created: $uri")
 
         resolver.openOutputStream(uri)?.use { outputStream ->
             outputStream.write(subtitleContent.toByteArray())
-        } ?: return Result.failure(IOException("Failed to open output stream"))
+            Log.d(TAG, "downloadSubtitles: Successfully wrote ${subtitleContent.length} bytes to file")
+        } ?: run {
+            Log.e(TAG, "downloadSubtitles: Failed to open output stream for URI: $uri")
+            return Result.failure(IOException("Failed to open output stream"))
+        }
 
         // Copy to clipboard if requested
         if (copyToClipboard) {
+            Log.d(TAG, "downloadSubtitles: Copying subtitles to clipboard")
             ClipboardHelper.copyToClipboard(context, subtitleContent, "Subtitles")
+            Log.d(TAG, "downloadSubtitles: Successfully copied to clipboard")
         }
 
         val message = if (copyToClipboard) {
@@ -437,9 +474,11 @@ private suspend fun downloadSubtitles(
         } else {
             "Subtitles saved to Downloads/SubSnag ✓"
         }
+        Log.d(TAG, "downloadSubtitles: Download completed successfully - $message")
 
         Result.success(message)
     } catch (e: Exception) {
+        Log.e(TAG, "downloadSubtitles: Unexpected error during download", e)
         Result.failure(e)
     }
 }
