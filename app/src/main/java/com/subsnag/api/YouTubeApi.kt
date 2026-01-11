@@ -152,16 +152,18 @@ class YouTubeApi {
      */
     suspend fun getSubtitles(videoId: String, track: SubtitleTrack): Result<String> {
         return try {
-            val subtitleUrl = if (track.baseUrl != null) {
-                // Use the baseUrl from the track info
-                track.baseUrl
-            } else {
-                // Fallback to timedtext API
-                "https://www.youtube.com/api/timedtext?v=$videoId&lang=${track.languageCode}&fmt=srv3"
-            }
+            // Construct a simple, reliable URL using YouTube's timedtext API
+            // Don't use the baseUrl as it often has signatures that expire or require special headers
+            val subtitleUrl = "https://www.youtube.com/api/timedtext?v=$videoId&lang=${track.languageCode}"
 
             Log.d(TAG, "Fetching subtitles from: $subtitleUrl")
-            val response = client.get(subtitleUrl).bodyAsText()
+
+            val response = client.get(subtitleUrl) {
+                // Add headers to mimic a browser request
+                header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                header("Accept-Language", "en-US,en;q=0.9")
+            }.bodyAsText()
+
             Log.d(TAG, "Subtitle response length: ${response.length} bytes")
             Log.d(TAG, "Response preview: ${response.take(200)}")
 
